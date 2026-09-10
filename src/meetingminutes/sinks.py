@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Protocol
 
+import httpx
+
 from meetingminutes.transcribe.base import Segment
+
+log = logging.getLogger(__name__)
 
 
 class Sink(Protocol):
@@ -70,3 +76,55 @@ class MultiSink:
 def session_transcript_path(output_dir: Path, now: datetime | None = None) -> Path:
     stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
     return output_dir / f"meeting-{stamp}.jsonl"
+
+
+class ApiSink:
+    """Stream segments to the MeetingMinutes API.
+
+    Creates the meeting on construction and ends it on ``close()``. Segments are posted per
+    batch (one transcribed chunk); a failed POST is retried a few times and then logged and
+    dropped rather than stalling transcription, since the JSONL sink still has every line.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        title: str | None = None,
+        source_device: str | None = None,
+        client: httpx.Client | None = None,
+        retries: int = 3,
+    ) -> None:
+        self._client = client or httpx.Client(base_url=base_url, timeout=10.0)
+        self._retries = retries
+        body = {"title": title, "source_device": source_device}
+        resp = self._client.post("/meetings", json=body)
+        resp.raise_for_status()
+        self.meeting_id: str = resp.json()["id"]
+
+    def write(self, segments: Iterable[Segment]) -> None:
+        batch = [seg.to_dict() for seg in segments]
+        if not batch:
+            return
+        self._post_with_retry(f"/meetings/{self.meeting_id}/segments", {"segments": batch})
+
+    def close(self) -> None:
+        try:
+            self._post_with_retry(f"/meetings/{self.meeting_id}/end", None)
+        finally:
+            self._client.close()
+
+    def _post_with_retry(self, path: str, json_body: dict | None) -> None:
+        delay = 0.5
+        for attempt in range(1, self._retries + 1):
+            try:
+                resp = self._client.post(path, json=json_body)
+                resp.raise_for_status()
+                return
+            except httpx.HTTPError as exc:
+                if attempt == self._retries:
+                    log.error("giving up on POST %s after %d attempts: %s", path, attempt, exc)
+                    return
+                log.warning("POST %s failed (attempt %d): %s", path, attempt, exc)
+                time.sleep(delay)
+                delay *= 2

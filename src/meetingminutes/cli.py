@@ -51,13 +51,23 @@ def record(
         None, help="faster-whisper model, e.g. base.en, small, medium."
     ),
     chunk_seconds: float | None = typer.Option(None, help="Seconds of audio per transcription."),
+    api_url: str | None = typer.Option(
+        None, help="Also stream segments to the MeetingMinutes API at this base URL."
+    ),
+    title: str | None = typer.Option(None, help="Meeting title stored with the API record."),
 ) -> None:
     """Capture system audio and stream a transcript to the console and a JSONL file."""
     from meetingminutes.audio.capture import SoundcardLoopbackSource
     from meetingminutes.audio.chunker import Chunker
     from meetingminutes.audio.devices import find_loopback_device
     from meetingminutes.pipeline import Pipeline
-    from meetingminutes.sinks import ConsoleSink, JsonlSink, MultiSink, session_transcript_path
+    from meetingminutes.sinks import (
+        ApiSink,
+        ConsoleSink,
+        JsonlSink,
+        MultiSink,
+        session_transcript_path,
+    )
     from meetingminutes.transcribe.whisper import FasterWhisperTranscriber
 
     settings = get_settings()
@@ -87,7 +97,17 @@ def record(
         chunk_seconds=chunk_seconds or settings.chunk_seconds,
         silence_rms=settings.silence_rms,
     )
-    pipeline = Pipeline(source, chunker, transcriber, MultiSink(ConsoleSink(), JsonlSink(out_path)))
+    sinks: list = [ConsoleSink(), JsonlSink(out_path)]
+    api_base = api_url or settings.api_url
+    if api_base:
+        try:
+            api_sink = ApiSink(api_base, title=title, source_device=dev.name)
+        except Exception as exc:  # noqa: BLE001 - connection refused, 5xx, bad URL...
+            typer.secho(f"Could not reach the API at {api_base}: {exc}", fg="red", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"API meeting:    {api_base}/meetings/{api_sink.meeting_id}")
+        sinks.append(api_sink)
+    pipeline = Pipeline(source, chunker, transcriber, MultiSink(*sinks))
 
     def _handle_stop(_sig, _frame) -> None:
         typer.echo("\nStopping...", err=True)
@@ -102,6 +122,21 @@ def record(
         f"\nDone: {pipeline.chunks_transcribed} chunks, {pipeline.segments_written} segments -> "
         f"{out_path}"
     )
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8000, help="Bind port."),
+    reload: bool = typer.Option(False, help="Auto-reload on code changes (development)."),
+) -> None:
+    """Run the storage API (FastAPI + Postgres). Run `alembic upgrade head` first."""
+    try:
+        import uvicorn  # noqa: PLC0415
+    except ImportError as exc:
+        typer.secho("Install the server extra: pip install 'meetingminutes[server]'", fg="red")
+        raise typer.Exit(code=1) from exc
+    uvicorn.run("meetingminutes.api.app:app", host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

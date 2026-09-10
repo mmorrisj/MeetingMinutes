@@ -41,6 +41,18 @@ class Settings(BaseSettings):
 
     # --- output ---
     output_dir: Path = Field(Path("transcripts"), description="Where transcript files are written.")
+    api_url: str | None = Field(
+        None,
+        description="Base URL of the MeetingMinutes API. When set, `record` also streams segments "
+        "there, e.g. http://localhost:8000.",
+    )
+
+    # --- storage service ---
+    database_url: str = Field(
+        "postgresql+asyncpg://meetingminutes:meetingminutes@localhost:5432/meetingminutes",
+        description="SQLAlchemy async URL for Postgres (matches docker-compose.yml by default).",
+    )
+    db_echo: bool = Field(False, description="Log every SQL statement.")
 
 
 def get_settings() -> Settings:

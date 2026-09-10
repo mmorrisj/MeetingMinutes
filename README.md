@@ -12,6 +12,8 @@ Audio never leaves your machine: transcription runs locally with
 ```
 loopback device ──► 0.5 s blocks ──► 10 s chunks ──► faster-whisper ──► console + JSONL
  (OS specific)      (capture thread)   (silence dropped)   (main thread)     transcripts/
+                                                                         └─► FastAPI ──► Postgres
+                                                                             (optional)  + pgvector
 ```
 
 * `audio/devices.py`  finds the *loopback* input for your speakers on each OS.
@@ -19,7 +21,11 @@ loopback device ──► 0.5 s blocks ──► 10 s chunks ──► faster-wh
 * `audio/chunker.py`  batches blocks into fixed windows and skips silent ones.
 * `transcribe/`        turns a chunk into timestamped `Segment`s (Whisper today; pluggable).
 * `pipeline.py`        wires the above with a bounded queue so the device never drops frames.
-* `sinks.py`           writes segments to the console and an append-only `.jsonl` file.
+* `sinks.py`           writes segments to the console, an append-only `.jsonl` file, and
+                       optionally the storage API.
+* `api/`               FastAPI service: create a meeting, append segments, end it, list/read.
+* `db/`                SQLAlchemy 2.0 models (`Meeting`, `Segment`) with a pgvector column.
+* `alembic/`           schema migrations.
 
 ## Platform notes (read this first)
 
@@ -33,7 +39,7 @@ loopback device ──► 0.5 s blocks ──► 10 s chunks ──► faster-wh
 
 ```bash
 uv venv && source .venv/bin/activate      # or python -m venv .venv
-uv pip install -e ".[whisper,dev]"
+uv pip install -e ".[whisper,server,dev]"
 ```
 
 ## Use
@@ -53,17 +59,48 @@ Transcripts land in `transcripts/meeting-<UTC timestamp>.jsonl`, one segment per
 Settings can also come from the environment or a `.env` file, prefixed `MM_`
 (`MM_WHISPER_MODEL=small.en`, `MM_CHUNK_SECONDS=15`, ...). See `config.py`.
 
+## Storage service (FastAPI + Postgres)
+
+The recorder works on its own, but to keep meetings queryable across sessions run the API:
+
+```bash
+docker compose up -d db            # Postgres 16 with pgvector on localhost:5432
+alembic upgrade head               # create the schema
+meetingminutes serve               # http://127.0.0.1:8000/docs
+meetingminutes record --api-url http://127.0.0.1:8000 --title "Weekly sync"
+```
+
+`record` creates a meeting, posts each transcribed chunk's segments as they arrive, and marks
+the meeting ended on Ctrl-C. The JSONL file is still written, so a dead API never loses text.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/meetings` | Start a meeting (`title`, `source_device`, `started_at` optional). |
+| `POST` | `/meetings/{id}/segments` | Append up to 1000 segments. `409` once the meeting has ended. |
+| `POST` | `/meetings/{id}/end` | Mark ended. Idempotent. |
+| `GET`  | `/meetings` | Newest first, `limit`/`offset`. |
+| `GET`  | `/meetings/{id}` | Meeting with its segments in time order. |
+| `GET`  | `/health` | Checks the database connection. |
+
+Connection settings: `MM_DATABASE_URL` (default matches `docker-compose.yml`), `MM_DB_ECHO`.
+
+`segments.embedding` is a nullable `vector` column reserved for semantic search. The
+dimension is unset until the embedding model is chosen; that increment adds a migration that
+fixes it and creates an HNSW index.
+
 ## Development
 
 ```bash
-pytest          # unit tests run with no audio hardware
+pytest          # unit tests need no audio hardware; API tests use an embedded Postgres (pgserver)
 ruff check .
 ```
 
+Set `MM_TEST_DATABASE_URL` to run the API tests against your own Postgres instead of the
+embedded one. Migrations are checked for drift against the models in `tests/test_migrations.py`.
+
 ## Roadmap
 
-1. **Storage + search** – FastAPI service, Postgres + pgvector, SQLAlchemy models for
-   meetings and segments, embeddings for semantic search over past meetings.
+1. **Semantic search** – embed segments into the pgvector column and add a `/search` endpoint.
 2. **VAD-aligned chunking** – cut on silence instead of fixed 10 s windows so words are
    never split at a boundary.
 3. **Speaker diarization** – who said what (pyannote or similar).
