@@ -64,14 +64,18 @@ async def get_meeting(meeting_id: uuid.UUID, session: Session) -> Meeting:
 
 @router.post("/{meeting_id}/segments", response_model=schemas.BatchResult)
 async def append_segments(
-    meeting_id: uuid.UUID, body: schemas.SegmentBatch, session: Session
+    meeting_id: uuid.UUID, body: schemas.SegmentBatch, session: Session, request: Request
 ) -> schemas.BatchResult:
+    from meetingminutes.api.search import embed_new_segments  # noqa: PLC0415 (circular)
+
     meeting = await _load_meeting(session, meeting_id)
     if meeting.ended_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "meeting has already ended")
-    session.add_all(Segment(meeting_id=meeting.id, **seg.model_dump()) for seg in body.segments)
+    segments = [Segment(meeting_id=meeting.id, **seg.model_dump()) for seg in body.segments]
+    await embed_new_segments(session, request.app.state.embedder, segments)
+    session.add_all(segments)
     await session.commit()
-    return schemas.BatchResult(inserted=len(body.segments))
+    return schemas.BatchResult(inserted=len(segments))
 
 
 @router.post("/{meeting_id}/end", response_model=schemas.MeetingOut)

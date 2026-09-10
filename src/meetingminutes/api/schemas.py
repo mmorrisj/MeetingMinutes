@@ -63,3 +63,23 @@ class MeetingList(BaseModel):
 
 class BatchResult(BaseModel):
     inserted: int
+
+
+class SearchHit(BaseModel):
+    segment_id: uuid.UUID
+    meeting_id: uuid.UUID
+    meeting_title: str | None
+    text: str
+    start_seconds: float
+    end_seconds: float
+    score: float = Field(description="Cosine similarity in [-1, 1]; higher is closer.")
+
+
+class SearchResponse(BaseModel):
+    query: str
+    hits: list[SearchHit]
+
+
+class BackfillResult(BaseModel):
+    embedded: int
+    remaining: bool = Field(description="True if more segments still need embedding.")

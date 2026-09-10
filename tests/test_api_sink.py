@@ -13,7 +13,7 @@ from meetingminutes.transcribe.base import Segment
 def sync_client(settings):
     # TestClient is a sync httpx.Client over the ASGI app and runs the lifespan on enter,
     # which is what ApiSink (a sync sink) needs.
-    with TestClient(create_app(settings), base_url="http://test") as c:
+    with TestClient(create_app(settings, embedder=None), base_url="http://test") as c:
         yield c
 
 
@@ -24,7 +24,7 @@ def test_sink_creates_meeting_streams_segments_and_ends(sync_client, settings):
     sink.write([Segment("three", 2.0, 3.0)])
     sink.close()  # ends the meeting and closes the client
 
-    with TestClient(create_app(settings)) as c:
+    with TestClient(create_app(settings, embedder=None)) as c:
         body = c.get(f"/meetings/{sink.meeting_id}").json()
     assert body["title"] == "Standup"
     assert body["source_device"] == "BlackHole"

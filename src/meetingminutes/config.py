@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     )
     db_echo: bool = Field(False, description="Log every SQL statement.")
 
+    # --- semantic search ---
+    embeddings_enabled: bool = Field(True, description="Embed segments on ingest for /search.")
+    embedding_model: str = Field(
+        "BAAI/bge-small-en-v1.5", description="fastembed model name. Must produce embedding_dim."
+    )
+    embedding_dim: int = Field(
+        384,
+        description="Width of segments.embedding. Fixed by migration 0002; changing it "
+        "requires a new migration.",
+    )
+
 
 def get_settings() -> Settings:
     return Settings()

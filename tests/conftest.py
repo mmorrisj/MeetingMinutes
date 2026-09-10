@@ -62,13 +62,38 @@ def settings(database_url: str) -> Settings:
     return Settings(database_url=database_url)
 
 
+class HashEmbedder:
+    """Deterministic bag-of-words embedder: shared words -> nearby vectors. No model needed."""
+
+    model_name = "test-hash-v1"
+    dim = 384
+
+    def _vec(self, text: str) -> list[float]:
+        v = np.zeros(self.dim, dtype=np.float32)
+        for word in text.lower().split():
+            v[hash(word) % self.dim] += 1.0  # PYTHONHASHSEED only changes *which* slot is used
+        norm = float(np.linalg.norm(v))
+        return (v / norm if norm else v).tolist()
+
+    def embed_documents(self, texts):
+        return [self._vec(t) for t in texts]
+
+    def embed_query(self, text: str):
+        return self._vec(text)
+
+
 @pytest.fixture
-async def app(settings: Settings):
+def embedder():
+    return HashEmbedder()
+
+
+@pytest.fixture
+async def app(settings: Settings, embedder):
     from sqlalchemy import text
 
     from meetingminutes.api.app import create_app
 
-    application = create_app(settings)
+    application = create_app(settings, embedder=embedder)
     async with application.router.lifespan_context(application):
         async with application.state.engine.begin() as conn:
             await conn.execute(text("TRUNCATE segments, meetings"))
